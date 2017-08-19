@@ -201,13 +201,10 @@ int main() {
   // start in lane 1
   int lane = 1;
 
-  // Have a reference velocity to target
-  double ref_vel = 0.0; // mph
-
   // Minimum number of cycles befor attempting a new lane change
   int keep_lane = 50;
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel,&keep_lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&keep_lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -244,6 +241,9 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
+            // Have a reference velocity to target
+            double ref_vel = 49.5; // mph
+
             // Closest car at each side
             double min_right_dist = 999999;
             double min_left_dist = 999999;
@@ -268,7 +268,6 @@ int main() {
 
             double closest = 99999.0;
             bool too_close = false;
-            bool do_break = false;
 
             cout << "----- SENSOR FUSION -----" << endl;
             // find ref_v to use
@@ -305,13 +304,17 @@ int main() {
                 // check s values greater than mine and s gap
                 if (check_car_s > car_s) {
                   closest = check_car_s - car_s;
-                  // Attempt to change lanes at 50 miles
+                  // Attempt to change lanes at 50 miles from the closest car
                   if (closest < 50) {
                     too_close = true;
                   }
-                  // Start breaking at 40 miles
+                  // If cannot change lanes, keep the same speed than the closest car
                   if (closest < 40) {
-                    do_break = true;
+                    ref_vel = check_speed * 2.237;
+                  }
+                  // If there's risk of collision, decrease speed
+                  if (closest < 30) {
+                    ref_vel -= 5;
                   }
                 }
               }
@@ -319,7 +322,7 @@ int main() {
 
             cout << "----- CLOSEST OBSTACLE -----" << endl;
             cout << "Left: " << min_left_dist << endl;
-            cout << "Current: " << closest << "\ttoo_close: " << too_close << "\tdo_breake: " << do_break << endl;
+            cout << "Current: " << closest << "\ttoo_close: " << too_close << "\tref_vel: " << ref_vel << endl;
             cout << "Right: " << min_right_dist << endl;
             cout << "----- LANE INFO -----" << endl;
             cout << "Current lane: " << lane << "\tkeep lane for: " << keep_lane << endl;
@@ -349,19 +352,9 @@ int main() {
               // trying to do many changes
               // Also increase the speed to catch up with other cars
               if (changed_lane) {
-                keep_lane = 25;
-                if (ref_vel < 49.5) {
-                  ref_vel += .2;
-                }
-              // If the car couldn't change lane and closest car is at 30 miles, reduce the speed
-              } else if (do_break) {
-                ref_vel -= .2;
+                keep_lane = 50;
               }
-            // Cold start, increase the speed slowly
-            } else if (ref_vel < 49.5) {
-              ref_vel += .224;
             }
-
 
             // Create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
             // later we will interpolate these waypoints with a spline and fill it in with more points that control speed
@@ -449,9 +442,16 @@ int main() {
 
             double x_add_on = 0;
 
+            // Increase or decrease speed as needed
+            if (car_speed < ref_vel) {
+              car_speed += .224;
+            } else {
+              car_speed -= .224;
+            }
+
             // fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
             for (int i = 0; i < 50-previous_path_x.size(); i++) {
-              double N = target_dist / (.02*ref_vel/2.24);
+              double N = target_dist / (.02*car_speed/2.24);
               double x_point = x_add_on + target_x / N;
               double y_point = s(x_point);
 
