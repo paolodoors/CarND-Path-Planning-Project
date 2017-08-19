@@ -204,7 +204,10 @@ int main() {
   // Have a reference velocity to target
   double ref_vel = 0.0; // mph
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
+  // Minimum number of cycles befor attempting a new lane change
+  int keep_lane = 50;
+
+  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy,&lane,&ref_vel,&keep_lane](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
@@ -241,6 +244,21 @@ int main() {
           	// Sensor Fusion Data, a list of all other cars on the same side of the road.
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
+            // Closest car at each side
+            double min_right_dist = 999999;
+            double min_left_dist = 999999;
+
+            // decrease the timer to allow a new lane change
+            if (keep_lane > 0) {
+              keep_lane -= 1;
+            }
+
+            cout << "----- EGO CAR -----" << endl;
+            cout << "\tx: " << car_x << "\ty: " << car_y
+                 << "\tyaw: " << car_yaw << "\tspeed: " << car_speed
+                 << "\ts: " << car_s << "\td: " << car_d
+                 << endl;
+
             // Previous path size (remaining)
             int prev_size = previous_path_x.size();
 
@@ -248,36 +266,98 @@ int main() {
               car_s = end_path_s;
             }
 
+            double closest = 99999.0;
             bool too_close = false;
+            bool do_break = false;
 
+            cout << "----- SENSOR FUSION -----" << endl;
             // find ref_v to use
             for (int i = 0; i < sensor_fusion.size(); i++) {
-              // car is in my lane
-              float d = sensor_fusion[i][6];
+              double vehicle_id = sensor_fusion[i][0];
+              double vehicle_x  = sensor_fusion[i][1];
+              double vehicle_y  = sensor_fusion[i][2];
+              double vehicle_vx = sensor_fusion[i][3];
+              double vehicle_vy = sensor_fusion[i][4];
+              double vehicle_s  = sensor_fusion[i][5];
+              double vehicle_d  = sensor_fusion[i][6];
+              double distance = sqrt((car_s-vehicle_s)*(car_s-vehicle_s) + (car_d-vehicle_d)*(car_d-vehicle_d));
 
-              if (d < (2+4*lane+2) && d > (2+4*lane-2)) {
-                double vx = sensor_fusion[i][3];
-                double vy = sensor_fusion[i][4];
-                double check_speed = sqrt(vx*vx+vy*vy);
-                double check_car_s = sensor_fusion[i][5];
+              cout << "Car ID: " << vehicle_id
+                   << "\tx: " << vehicle_x << "\ty: " << vehicle_y
+                   << "\tvx: " << vehicle_vx << "\tvy: " << vehicle_vy
+                   << "\ts: " << vehicle_s << "\td: " << vehicle_d
+                   << "\tdist: " << distance
+                   << "\tdist_d: " << (car_d-vehicle_d)
+                   << endl;
+
+              if ((car_d-vehicle_d) < -1.0 and distance < min_right_dist) {
+                min_right_dist = distance;
+              } else if ((car_d-vehicle_d) > 1.0 and distance < min_left_dist) {
+                min_left_dist = distance;
+              }
+
+              // car is in my lane
+              if (vehicle_d < (2+4*lane+2) && vehicle_d > (2+4*lane-2)) {
+                double check_speed = sqrt(vehicle_vx*vehicle_vx + vehicle_vy*vehicle_vy);
+                double check_car_s = vehicle_s;
 
                 check_car_s += ((double)prev_size*.02*check_speed); // if using previous points can project s value out
                 // check s values greater than mine and s gap
-                if ((check_car_s > car_s) && (check_car_s - car_s) < 30) {
-                  too_close = true;
-
-                  // Attempt to change lane
-                  if (lane > 0) {
-                    lane -= 1;
-                  } else {
-                    lane += 1;
+                if (check_car_s > car_s) {
+                  closest = check_car_s - car_s;
+                  // Attempt to change lanes at 50 miles
+                  if (closest < 50) {
+                    too_close = true;
+                  }
+                  // Start breaking at 40 miles
+                  if (closest < 40) {
+                    do_break = true;
                   }
                 }
               }
             }
 
+            cout << "----- CLOSEST OBSTACLE -----" << endl;
+            cout << "Left: " << min_left_dist << endl;
+            cout << "Current: " << closest << "\ttoo_close: " << too_close << "\tdo_breake: " << do_break << endl;
+            cout << "Right: " << min_right_dist << endl;
+            cout << "----- LANE INFO -----" << endl;
+            cout << "Current lane: " << lane << "\tkeep lane for: " << keep_lane << endl;
+
             if (too_close) {
-              ref_vel -= .224;
+              // Attempt to change lane
+              bool changed_lane = false;
+              // Left lane: try to change to center lane
+              if (lane == 0 and min_right_dist >= 20.0 and keep_lane == 0) {
+                lane += 1;
+                changed_lane = true;
+              // Center lane: choose the path with less obstacles
+              } else if (lane == 1 and (min_left_dist >= 20.0 or min_right_dist >= 20.0) and keep_lane == 0) {
+                if (min_left_dist > min_right_dist) {
+                  lane -= 1;
+                } else {
+                  lane += 1;
+                }
+                changed_lane = true;
+              // Right lane: try to change to center lane
+              } else if (lane == 2 and min_left_dist >= 20.0 and keep_lane == 0) {
+                lane -= 1;
+                changed_lane = true;
+              }
+
+              // In the car changed lanes, set the timer to avoid getting stuck in the middle of lanes
+              // trying to do many changes
+              // Also increase the speed to catch up with other cars
+              if (changed_lane) {
+                keep_lane = 25;
+                if (ref_vel < 49.5) {
+                  ref_vel += .2;
+                }
+              // If the car couldn't change lane and closest car is at 30 miles, reduce the speed
+              } else if (do_break) {
+                ref_vel -= .2;
+              }
+            // Cold start, increase the speed slowly
             } else if (ref_vel < 49.5) {
               ref_vel += .224;
             }
