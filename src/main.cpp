@@ -201,6 +201,9 @@ int main() {
   // start in lane 1
   int lane = 1;
 
+  // current speed 0
+  double vel = 0.0;
+
   // Minimum number of cycles befor attempting a new lane change
   int keep_lane = 50;
 
@@ -261,6 +264,7 @@ int main() {
 
             // Previous path size (remaining)
             int prev_size = previous_path_x.size();
+            cout << "Prev size: " << prev_size << endl;
 
             if (prev_size > 0) {
               car_s = end_path_s;
@@ -304,17 +308,18 @@ int main() {
                 // check s values greater than mine and s gap
                 if (check_car_s > car_s) {
                   closest = check_car_s - car_s;
-                  // Attempt to change lanes at 50 miles from the closest car
+                  // Attempt to change lanes at 50 meters from the closest car
                   if (closest < 50) {
                     too_close = true;
                   }
                   // If cannot change lanes, keep the same speed than the closest car
                   if (closest < 40) {
                     ref_vel = check_speed * 2.237;
-                  }
-                  // If there's risk of collision, decrease speed
-                  if (closest < 30) {
-                    ref_vel -= 5;
+
+                    // If there's risk of collision, decrease speed
+                    if (closest < 30) {
+                      ref_vel -= 5;
+                    }
                   }
                 }
               }
@@ -388,6 +393,8 @@ int main() {
               double ref_y_prev = previous_path_y[prev_size-2];
               ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
 
+              car_speed = (sqrt((ref_x-ref_x_prev)*(ref_x-ref_x_prev)+(ref_y-ref_y_prev)*(ref_y-ref_y_prev))/.02)*2.237;
+
               // use two points that make the path tangent to the previous path's end point
               ptsx.push_back(ref_x_prev);
               ptsx.push_back(ref_x);
@@ -442,15 +449,15 @@ int main() {
 
             double x_add_on = 0;
 
-            // Increase or decrease speed as needed
-            if (car_speed < ref_vel) {
-              car_speed += .224;
-            } else {
-              car_speed -= .224;
-            }
-
             // fill up the rest of our path planner after filling it with previous points, here we will always output 50 points
             for (int i = 0; i < 50-previous_path_x.size(); i++) {
+              // Increase or decrease speed as needed
+              if (car_speed < ref_vel) {
+                car_speed += .224;
+              } else if (car_speed > ref_vel){
+                car_speed -= .224;
+              }
+
               double N = target_dist / (.02*car_speed/2.24);
               double x_point = x_add_on + target_x / N;
               double y_point = s(x_point);
